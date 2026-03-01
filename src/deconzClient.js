@@ -12,15 +12,12 @@ class DeconzClient {
         this.deviceId = options.deviceId;
         this.debug = options.debug;
         this.ws = null;
-        this.connected = false;
-        this.onEvent = null;
         this._destroyed = false;
         this._reconnectTimer = null;
         this._reconnectDelay = RECONNECT_BASE_DELAY_MS;
     }
 
     connect(onEvent) {
-        this.onEvent = onEvent;
         this._destroyed = false;
         this._reconnectDelay = RECONNECT_BASE_DELAY_MS;
 
@@ -38,7 +35,6 @@ class DeconzClient {
             this.ws = new WebSocket(url);
 
             this.ws.on('open', () => {
-                this.connected = true;
                 // Reset backoff on successful connection
                 this._reconnectDelay = RECONNECT_BASE_DELAY_MS;
                 if (this.debug) {
@@ -58,9 +54,7 @@ class DeconzClient {
                         String(msg.id) === String(this.deviceId) &&
                         msg.state
                     ) {
-                        if (typeof this.onEvent === 'function') {
-                            this.onEvent(msg.state);
-                        }
+                        onEvent(msg.state);
                     }
                 } catch (err) {
                     this.log.error(`deCONZ websocket parse error: ${err.message}`);
@@ -68,7 +62,6 @@ class DeconzClient {
             });
 
             this.ws.on('close', () => {
-                this.connected = false;
                 if (this.debug) {
                     this.log(`deCONZ websocket disconnected from ${url}`);
                 }
@@ -101,7 +94,6 @@ class DeconzClient {
             this._reconnectTimer = null;
         }
         if (this.ws) {
-            this.connected = false;
             this.ws.close();
             this.ws = null;
         }

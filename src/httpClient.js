@@ -80,54 +80,42 @@ class HttpClient {
         if (this.debug && this.log) {
             this.log('Getting status: %s', url);
         }
-        this.request(url, '', 'GET', (error, response, responseBody) => {
+        this.request(url, '', 'GET', (error, _response, responseBody) => {
             if (error) {
                 callback(error);
                 return;
             }
-            // Safe default: CLOSED (1) — keeps the door treated as closed
-            // when the sensor response does not match any configured pattern.
-            let statusValue = 1;
-            if (statusKey) {
-                let parsed;
-                try {
-                    parsed = typeof responseBody === 'string' ? JSON.parse(responseBody) : responseBody;
-                } catch (err) {
-                    callback(new Error(`Failed to parse status response as JSON: ${err.message}`));
-                    return;
-                }
-                const originalStatusValue = JSONPath({
-                    path: statusKey,
-                    json: parsed,
-                    wrap: false,
-                });
-                let matched = false;
-                // values.open/closed/opening/closing sind bereits kompilierte RegExp-Instanzen
-                // (vorbereitet in GarageDoorOpener._compileRegex); kein erneutes new RegExp() nötig.
-                if (values.open.test(String(originalStatusValue))) {
-                    statusValue = 0;
-                    matched = true;
-                } else if (values.closed.test(String(originalStatusValue))) {
-                    statusValue = 1;
-                    matched = true;
-                } else if (values.opening.test(String(originalStatusValue))) {
-                    statusValue = 2;
-                    matched = true;
-                } else if (values.closing.test(String(originalStatusValue))) {
-                    statusValue = 3;
-                    matched = true;
-                }
-                if (!matched && this.log) {
-                    this.log.warn(
-                        'Status value "%s" did not match any configured pattern – defaulting to CLOSED',
-                        originalStatusValue,
-                    );
-                }
-                if (this.debug && this.log) {
-                    this.log('Transformed status value from %s to %s (%s)', originalStatusValue, statusValue, statusKey);
-                }
-            } else {
-                statusValue = responseBody;
+            let parsed;
+            try {
+                parsed = typeof responseBody === 'string' ? JSON.parse(responseBody) : responseBody;
+            } catch (err) {
+                callback(new Error(`Failed to parse status response as JSON: ${err.message}`));
+                return;
+            }
+            const originalStatusValue = JSONPath({
+                path: statusKey,
+                json: parsed,
+                wrap: false,
+            });
+            const str = String(originalStatusValue);
+            // values.open/closed/opening/closing sind bereits kompilierte RegExp-Instanzen
+            // (vorbereitet in GarageDoorOpener._compileRegex); kein erneutes new RegExp() nötig.
+            const match = [
+                [values.open,    0],
+                [values.closed,  1],
+                [values.opening, 2],
+                [values.closing, 3],
+            ].find(([rx]) => rx.test(str));
+
+            if (!match && this.log) {
+                this.log.warn(
+                    'Status value "%s" did not match any configured pattern – defaulting to CLOSED',
+                    originalStatusValue,
+                );
+            }
+            const statusValue = match ? match[1] : 1;
+            if (this.debug && this.log) {
+                this.log('Transformed status value from %s to %s (%s)', originalStatusValue, statusValue, statusKey);
             }
             callback(null, statusValue);
         });

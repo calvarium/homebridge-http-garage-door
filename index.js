@@ -20,11 +20,8 @@ module.exports = function(homebridge) {
     });
 
     homebridge.on('shutdown', () => {
-        // Kopie erstellen, da _unregisterInstance das Array während der Iteration verändert
-        [...GarageDoorOpener.instances].forEach(instance => {
-            instance.stopPolling();
-            instance.stopWebhookServer();
-            instance.stopDeconzListener();
+        GarageDoorOpener.instances.forEach(instance => {
+            instance.stop();
             instance.stateManager.destroy();
             instance._unregisterInstance();
         });

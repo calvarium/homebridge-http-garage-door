@@ -27,9 +27,7 @@ class WebhookServer {
                     // Pfad ohne Query-String vergleichen
                     const reqPath = req.url ? req.url.split('?')[0] : '';
                     if (reqPath === this.path) {
-                        if (typeof this.handler === 'function') {
-                            this.handler();
-                        }
+                        this.handler();
                         res.statusCode = 200;
                         res.end('OK');
                     } else {

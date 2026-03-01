@@ -174,9 +174,11 @@ class DoorStateManager {
 
     _handleWebhookDebounced(polling, statusURL) {
         const currentState = this.getCurrentDoorState();
-        const targetState = this.service.getCharacteristic(this.Characteristic.TargetDoorState).value;
         if (this.debug) {
-            this.log('Webhook received, currentState: %s, targetState: %s', currentState, targetState);
+            this.log('Webhook received, currentState: %s, targetState: %s',
+                currentState,
+                this.service.getCharacteristic(this.Characteristic.TargetDoorState).value,
+            );
         }
 
         // Wenn Polling deaktiviert und der initiale Status noch unbekannt ist (null),
@@ -282,11 +284,9 @@ class DoorStateManager {
         this.ignoreDeconzOpen = false;
         this.syncFinalState(state.open ? DOOR_STATE.OPEN : DOOR_STATE.CLOSED);
 
-        if (state.open) {
-            if (this.autoClose) {
-                this._scheduleAutoClose();
-            }
-        } else {
+        if (state.open && this.autoClose) {
+            this._scheduleAutoClose();
+        } else if (!state.open) {
             this._cancelAutoClose();
         }
 

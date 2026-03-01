@@ -41,52 +41,41 @@ class GarageDoorOpener {
         this.serial = config.serial || packageJson.version;
         this.model = config.model || packageJson.name;
         this.firmware = config.firmware || packageJson.version;
-        this.username = config.username || null;
-        this.password = config.password || null;
+        const username = config.username || null;        const password = config.password || null;
         this.timeout = config.timeout || 3000;
         this.webhookPort = config.webhookPort || null;
-        this.webhookPath = config.webhookPath || '/garage/update';
         // Config-Key http_method (snake_case) wird intern als httpMethod (camelCase) geführt
         this.httpMethod = config.http_method || 'GET';
         this.polling = config.polling || false;
         this.pollInterval = config.pollInterval || 120;
         this.statusURL = config.statusURL;
         this.statusKey = config.statusKey || '$.inputs[0].input';
-        this.statusValueOpen = config.statusValueOpen || '0';
-        this.statusValueClosed = config.statusValueClosed || '1';
-        this.statusValueOpening = config.statusValueOpening || '2';
-        this.statusValueClosing = config.statusValueClosing || '3';
-        this.rejectUnauthorized = config.rejectUnauthorized !== false;
+        this._statusRegexes = {
+            open:    this._compileRegex(config.statusValueOpen    || '0', 'statusValueOpen'),
+            closed:  this._compileRegex(config.statusValueClosed  || '1', 'statusValueClosed'),
+            opening: this._compileRegex(config.statusValueOpening || '2', 'statusValueOpening'),
+            closing: this._compileRegex(config.statusValueClosing || '3', 'statusValueClosing'),
+        };
 
         this.deconzDeviceId = config.deconzDeviceId || null;
-        this.deconzHost = config.deconzHost || 'localhost';
-        this.deconzPort = config.deconzPort || 443;
 
         // Ob mindestens ein Sensor-Feedback-Kanal konfiguriert ist.
         // Entscheidet, ob setTargetDoorState die Simulation selbst startet.
         this.hasSensorFeedback = !!(this.webhookPort || this.deconzDeviceId);
 
-        // Regex-Ausdrücke vorab kompilieren und auf Gültigkeit prüfen,
-        // damit Konfigurationsfehler früh (beim Start) sichtbar werden.
-        this.statusRegexOpen = this._compileRegex(this.statusValueOpen, 'statusValueOpen');
-        this.statusRegexClosed = this._compileRegex(this.statusValueClosed, 'statusValueClosed');
-        this.statusRegexOpening = this._compileRegex(this.statusValueOpening, 'statusValueOpening');
-        this.statusRegexClosing = this._compileRegex(this.statusValueClosing, 'statusValueClosing');
-
-        if (this.username != null && this.password != null) {
-            this.auth = { user: this.username, pass: this.password };
-        }
+        const auth = (username != null && password != null)
+            ? { user: username, pass: password }
+            : undefined;
 
         this.httpClient = new HttpClient(this.log, {
             debug: this.debug,
             httpMethod: this.httpMethod,
             timeout: this.timeout,
-            auth: this.auth,
-            rejectUnauthorized: this.rejectUnauthorized,
+            auth,
+            rejectUnauthorized: config.rejectUnauthorized !== false,
         });
 
         this.service = new Service.GarageDoorOpener(this.name);
-        this.informationService = null;
         this.pollIntervalHandle = null;
         this._statusPending = false;
 
@@ -109,15 +98,15 @@ class GarageDoorOpener {
                 this.log,
                 this.webhookPort,
                 this.debug,
-                this.webhookPath,
+                config.webhookPath || '/garage/update',
                 () => this.stateManager.handleWebhook(this.polling, this.statusURL),
             );
         }
 
         if (this.deconzDeviceId) {
             this.deconzClient = new DeconzClient(this.log, {
-                host: this.deconzHost,
-                port: this.deconzPort,
+                host: config.deconzHost || 'localhost',
+                port: config.deconzPort || 443,
                 deviceId: this.deconzDeviceId,
                 debug: this.debug,
             });
@@ -168,12 +157,7 @@ class GarageDoorOpener {
         this.httpClient.getStatus(
             this.statusURL,
             this.statusKey,
-            {
-                open: this.statusRegexOpen,
-                closed: this.statusRegexClosed,
-                opening: this.statusRegexOpening,
-                closing: this.statusRegexClosing,
-            },
+            this._statusRegexes,
             (error, statusValue) => {
                 this._statusPending = false;
                 if (error) {
@@ -267,24 +251,16 @@ class GarageDoorOpener {
      * Wird von index.js im didFinishLaunching-Event aufgerufen.
      */
     start() {
-        this.startWebhookServer();
-        this._getStatus(() => {});
-        this.startDeconzListener();
-    }
-
-    startWebhookServer() {
         if (this.webhookServer) {
             this.webhookServer.start();
         }
-    }
-
-    startDeconzListener() {
+        this._getStatus(() => {});
         if (this.deconzClient) {
             this.deconzClient.connect((state) => this.stateManager.handleDeconzState(state));
         }
     }
 
-    stopPolling() {
+    stop() {
         if (this.pollIntervalHandle) {
             clearInterval(this.pollIntervalHandle);
             this.pollIntervalHandle = null;
@@ -292,22 +268,15 @@ class GarageDoorOpener {
                 this.log('Polling interval stopped');
             }
         }
-    }
-
-    stopWebhookServer() {
         if (this.webhookServer) {
             this.webhookServer.stop();
         }
-    }
-
-    stopDeconzListener() {
         if (this.deconzClient) {
             this.deconzClient.close();
         }
     }
 
     /**
-     * Entfernt diese Instanz aus dem statischen instances-Array.
      * Muss beim Shutdown aufgerufen werden, um einen Memory Leak zu vermeiden.
      */
     _unregisterInstance() {
@@ -322,8 +291,8 @@ class GarageDoorOpener {
         if (this.debug) {
             this.log('Initializing services');
         }
-        this.informationService = new Service.AccessoryInformation();
-        this.informationService
+        const informationService = new Service.AccessoryInformation();
+        informationService
             .setCharacteristic(Characteristic.Manufacturer, this.manufacturer)
             .setCharacteristic(Characteristic.Model, this.model)
             .setCharacteristic(Characteristic.SerialNumber, this.serial)
@@ -356,7 +325,7 @@ class GarageDoorOpener {
             }
         }
 
-        return [this.informationService, this.service];
+        return [informationService, this.service];
     }
 }
 
