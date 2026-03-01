@@ -19,10 +19,11 @@ class GarageDoorOpener {
         this.closeTime = config.closeTime || 10;
         this.switchOff = config.switchOff || false;
         this.switchOffDelay = config.switchOffDelay || 2;
+        this.switchOffURL = config.switchOffURL || config.openURL;
         this.autoClose = config.autoClose || false;
         this.autoCloseDelay = config.autoCloseDelay || 3600;
         this.autoCloseTimer = null;
-        this.manufacturer = config.manufacturer || packageJson.author.name;
+        this.manufacturer = config.manufacturer || (typeof packageJson.author === 'string' ? packageJson.author : packageJson.author.name);
         this.serial = config.serial || packageJson.version;
         this.model = config.model || packageJson.name;
         this.firmware = config.firmware || packageJson.version;
@@ -80,6 +81,7 @@ class GarageDoorOpener {
         this.movementTimeout = null;
         this.ignoreDeconzOpen = false;
         this.pollIntervalHandle = null;
+        this._statusPending = false;
 
         instances.push(this);
     }
@@ -99,6 +101,14 @@ class GarageDoorOpener {
     }
 
     _getStatus(callback) {
+        if (this._statusPending) {
+            if (this.config.debug) {
+                this.log('_getStatus skipped: previous request still in flight');
+            }
+            callback();
+            return;
+        }
+        this._statusPending = true;
         this.httpClient.getStatus(
             this.statusURL,
             this.statusKey,
@@ -109,6 +119,7 @@ class GarageDoorOpener {
                 closing: this.statusValueClosing,
             },
             (error, statusValue) => {
+                this._statusPending = false;
                 if (error) {
                     this.log.error('Error getting status: %s', error.message);
                     this.service
@@ -119,9 +130,13 @@ class GarageDoorOpener {
                     this.service
                         .getCharacteristic(Characteristic.CurrentDoorState)
                         .updateValue(statusValue);
-                    this.service
-                        .getCharacteristic(Characteristic.TargetDoorState)
-                        .updateValue(statusValue);
+                    // TargetDoorState nur synchronisieren wenn kein aktiver
+                    // Bewegungsvorgang läuft (vermeidet Race Condition mit laufendem Poll)
+                    if (!this.movementTimeout) {
+                        this.service
+                            .getCharacteristic(Characteristic.TargetDoorState)
+                            .updateValue(statusValue <= 1 ? statusValue : 0);
+                    }
                     if (this.config.debug) {
                         this.log('Updated door state to: %s', statusValue);
                     }
@@ -245,7 +260,7 @@ class GarageDoorOpener {
         this.log('Waiting %s seconds for switch off', this.switchOffDelay);
         setTimeout(() => {
             this.log('SwitchOff...');
-            this._httpRequest(this.closeURL, '', this.http_method, () => {});
+            this._httpRequest(this.switchOffURL, '', this.http_method, () => {});
         }, this.switchOffDelay * 1000);
     }
 
@@ -255,6 +270,23 @@ class GarageDoorOpener {
         if (this.config.debug) {
             this.log('Webhook received, currentState: %s, targetState: %s', currentState, targetState);
         }
+
+        // Wenn Polling deaktiviert und der initiale Status noch unbekannt ist (null),
+        // erst einen frischen Status holen bevor die Webhook-Logik greift
+        if (!this.polling && this.statusURL && currentState === null) {
+            if (this.config.debug) {
+                this.log('Webhook: initial state unknown, fetching status first');
+            }
+            this._getStatus(() => this._processWebhookState());
+            return;
+        }
+
+        this._processWebhookState();
+    }
+
+    _processWebhookState() {
+        const currentState = this.getCurrentDoorState();
+        const targetState = this.service.getCharacteristic(Characteristic.TargetDoorState).value;
         try {
             switch (currentState) {
                 case 1: // Closed -> start opening
@@ -422,12 +454,18 @@ class GarageDoorOpener {
             if (this.config.debug) {
                 this.log('Polling disabled');
             }
-            this.service
-                .getCharacteristic(Characteristic.CurrentDoorState)
-                .updateValue(1);
-            this.service
-                .getCharacteristic(Characteristic.TargetDoorState)
-                .updateValue(1);
+            // Wenn eine statusURL konfiguriert ist, einmalig den echten Status holen.
+            // Ansonsten sicher auf CLOSED (1) initialisieren.
+            if (this.statusURL) {
+                this._getStatus(() => {});
+            } else {
+                this.service
+                    .getCharacteristic(Characteristic.CurrentDoorState)
+                    .updateValue(1);
+                this.service
+                    .getCharacteristic(Characteristic.TargetDoorState)
+                    .updateValue(1);
+            }
         }
 
         return [this.informationService, this.service];

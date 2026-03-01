@@ -43,6 +43,11 @@
                 "required": true,
                 "description": "URL to trigger the closing of your garage"
             },
+            "switchOffURL": {
+                "title": "Switch Off URL",
+                "type": "string",
+                "description": "URL to turn off the relay after opening (switchOff feature). Defaults to openURL if not set."
+            },
             "username": {
                 "title": "Username",
                 "type": "string",
