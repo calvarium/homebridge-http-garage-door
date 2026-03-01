@@ -19,8 +19,6 @@ class GarageDoorOpener {
         this.closeTime = config.closeTime || 10;
         this.switchOff = config.switchOff || false;
         this.switchOffDelay = config.switchOffDelay || 2;
-        this.autoLock = config.autoLock || false;
-        this.autoLockDelay = config.autoLockDelay || 20;
         this.manufacturer = config.manufacturer || packageJson.author.name;
         this.serial = config.serial || packageJson.version;
         this.model = config.model || packageJson.name;
@@ -147,9 +145,6 @@ class GarageDoorOpener {
                     if (this.switchOff) {
                         this.switchOffFunction();
                     }
-                    if (this.autoLock) {
-                        this.autoLockFunction();
-                    }
                 }
                 callback();
             }
@@ -195,17 +190,6 @@ class GarageDoorOpener {
             this._getStatus(() => {});
             this.log('Finished closing');
         }, this.closeTime * 1000);
-    }
-
-    autoLockFunction() {
-        if (this.config.debug) {
-            this.log('autoLockFunction called');
-        }
-        this.log('Waiting %s seconds for autolock', this.autoLockDelay);
-        setTimeout(() => {
-            this.service.setCharacteristic(Characteristic.TargetDoorState, 1);
-            this.log('Autolocking...');
-        }, this.autoLockDelay * 1000);
     }
 
     switchOffFunction() {
