@@ -22,5 +22,5 @@
     "debug": false,
     "deconzDeviceId": "1",
     "deconzHost": "127.0.0.1",
-    "deconzPort": 443
+    "deconzPort": 80
 }

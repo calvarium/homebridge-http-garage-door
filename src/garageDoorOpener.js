@@ -14,9 +14,9 @@ const DOOR_STATE = {
 
 let Service;
 let Characteristic;
-const instances = [];
 
 class GarageDoorOpener {
+    static instances = [];
     constructor(log, config) {
         this.log = log;
         this.config = config;
@@ -92,8 +92,9 @@ class GarageDoorOpener {
         this.ignoreDeconzOpen = false;
         this.pollIntervalHandle = null;
         this._statusPending = false;
+        this._webhookDebounceTimer = null;
 
-        instances.push(this);
+        GarageDoorOpener.instances.push(this);
     }
 
     static configure(service, characteristic) {
@@ -115,7 +116,8 @@ class GarageDoorOpener {
             if (this.config.debug) {
                 this.log('_getStatus skipped: previous request still in flight');
             }
-            callback();
+            // Pass a sentinel so callers can distinguish "skipped" from "success".
+            callback(null, /* skipped */ true);
             return;
         }
         this._statusPending = true;
@@ -244,8 +246,16 @@ class GarageDoorOpener {
                 }
             };
             if (this.polling) {
-                // Frischen Status holen, dann entscheiden
-                this._getStatus(() => execute());
+                // Frischen Status holen, dann entscheiden.
+                // Second argument is `true` when the request was skipped (still in flight);
+                // in that case we still run execute() because the cached state is recent.
+                this._getStatus((_err, skipped) => {
+                    if (_err && !skipped) {
+                        this.log.warn('Auto-close: could not refresh status, skipping');
+                        return;
+                    }
+                    execute();
+                });
             } else {
                 // Ohne Sensor konservativ direkt schließen
                 execute();
@@ -275,6 +285,18 @@ class GarageDoorOpener {
     }
 
     handleWebhook() {
+        // Debounce rapid successive webhook calls (e.g. contact-sensor bounce).
+        // Only the last call within 300 ms will actually be processed.
+        if (this._webhookDebounceTimer) {
+            clearTimeout(this._webhookDebounceTimer);
+        }
+        this._webhookDebounceTimer = setTimeout(() => {
+            this._webhookDebounceTimer = null;
+            this._handleWebhookDebounced();
+        }, 300);
+    }
+
+    _handleWebhookDebounced() {
         const currentState = this.getCurrentDoorState();
         const targetState = this.service.getCharacteristic(Characteristic.TargetDoorState).value;
         if (this.config.debug) {
@@ -295,6 +317,8 @@ class GarageDoorOpener {
     }
 
     _processWebhookState() {
+        // Snapshot both values before any updateValue call to avoid reading
+        // a targetState that was already mutated during this processing run.
         const currentState = this.getCurrentDoorState();
         const targetState = this.service.getCharacteristic(Characteristic.TargetDoorState).value;
         try {
@@ -417,7 +441,7 @@ class GarageDoorOpener {
         }
     }
 
-    stopWebhookServer() {
+    stopPolling() {
         if (this.pollIntervalHandle) {
             clearInterval(this.pollIntervalHandle);
             this.pollIntervalHandle = null;
@@ -425,6 +449,9 @@ class GarageDoorOpener {
                 this.log('Polling interval stopped');
             }
         }
+    }
+
+    stopWebhookServer() {
         if (this.webhookServer) {
             this.webhookServer.stop();
         }
@@ -480,7 +507,5 @@ class GarageDoorOpener {
         return [this.informationService, this.service];
     }
 }
-
-GarageDoorOpener.instances = instances;
 
 module.exports = GarageDoorOpener;

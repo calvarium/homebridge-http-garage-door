@@ -85,7 +85,9 @@ class HttpClient {
                 callback(error);
                 return;
             }
-            let statusValue = 0;
+            // Safe default: CLOSED (1) — keeps the door treated as closed
+            // when the sensor response does not match any configured pattern.
+            let statusValue = 1;
             if (statusKey) {
                 let parsed;
                 try {
@@ -99,14 +101,25 @@ class HttpClient {
                     json: parsed,
                     wrap: false,
                 });
+                let matched = false;
                 if (new RegExp(values.open).test(originalStatusValue)) {
                     statusValue = 0;
+                    matched = true;
                 } else if (new RegExp(values.closed).test(originalStatusValue)) {
                     statusValue = 1;
+                    matched = true;
                 } else if (new RegExp(values.opening).test(originalStatusValue)) {
                     statusValue = 2;
+                    matched = true;
                 } else if (new RegExp(values.closing).test(originalStatusValue)) {
                     statusValue = 3;
+                    matched = true;
+                }
+                if (!matched && this.log) {
+                    this.log.warn(
+                        'Status value "%s" did not match any configured pattern – defaulting to CLOSED',
+                        originalStatusValue,
+                    );
                 }
                 if (this.debug && this.log) {
                     this.log('Transformed status value from %s to %s (%s)', originalStatusValue, statusValue, statusKey);

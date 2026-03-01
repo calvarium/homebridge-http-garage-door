@@ -1,22 +1,33 @@
 const WebSocket = require('ws');
 
+// Reconnect timing constants
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 60000;
+
 class DeconzClient {
     constructor(log, options = {}) {
         this.log = log;
         this.host = options.host || 'localhost';
-        this.port = options.port || 443;
+        this.port = options.port || 80;
         this.deviceId = options.deviceId;
         this.debug = options.debug;
         this.ws = null;
         this.connected = false;
         this.onEvent = null;
         this._destroyed = false;
+        this._reconnectTimer = null;
+        this._reconnectDelay = RECONNECT_BASE_DELAY_MS;
     }
 
     connect(onEvent) {
         this.onEvent = onEvent;
         this._destroyed = false;
-        const url = `ws://${this.host}:${this.port}`;
+        this._reconnectDelay = RECONNECT_BASE_DELAY_MS;
+
+        // Use wss:// for port 443 (standard HTTPS/WSS port), ws:// otherwise.
+        const scheme = this.port === 443 ? 'wss' : 'ws';
+        const url = `${scheme}://${this.host}:${this.port}`;
+
         const connectWebSocket = () => {
             if (this._destroyed) {
                 return;
@@ -28,6 +39,8 @@ class DeconzClient {
 
             this.ws.on('open', () => {
                 this.connected = true;
+                // Reset backoff on successful connection
+                this._reconnectDelay = RECONNECT_BASE_DELAY_MS;
                 if (this.debug) {
                     this.log(`deCONZ websocket connected to ${url}`);
                 }
@@ -60,7 +73,15 @@ class DeconzClient {
                     this.log(`deCONZ websocket disconnected from ${url}`);
                 }
                 if (!this._destroyed) {
-                    setTimeout(connectWebSocket, 10000);
+                    if (this.debug) {
+                        this.log(`deCONZ reconnecting in ${this._reconnectDelay}ms`);
+                    }
+                    this._reconnectTimer = setTimeout(() => {
+                        this._reconnectTimer = null;
+                        connectWebSocket();
+                    }, this._reconnectDelay);
+                    // Exponential backoff, capped at max delay
+                    this._reconnectDelay = Math.min(this._reconnectDelay * 2, RECONNECT_MAX_DELAY_MS);
                 }
             });
 
@@ -74,6 +95,11 @@ class DeconzClient {
 
     close() {
         this._destroyed = true;
+        // Cancel any pending reconnect timer so no new connection attempt is started
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
         if (this.ws) {
             this.connected = false;
             this.ws.close();

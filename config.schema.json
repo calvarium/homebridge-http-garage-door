@@ -74,6 +74,7 @@
             "closeTime": {
                 "title": "Time to close the door",
                 "type": "integer",
+                "required": true,
                 "default": 10,
                 "description": "Time (in seconds) to simulate your garage closing"
             },
@@ -138,7 +139,7 @@
             },
 
             "manufacturer": {
-                "title": "Manufactor",
+                "title": "Manufacturer",
                 "type": "string",
                 "description": "Appears under the Manufacturer field for the accessory"
             },
@@ -167,8 +168,8 @@
             "deconzPort": {
                 "title": "deCONZ port",
                 "type": "integer",
-                "default": 443,
-                "description": "Port of the deCONZ websocket"
+                "default": 80,
+                "description": "Port of the deCONZ websocket. Use 80 for plain ws:// (default), 443 for wss://."
             },
             "rejectUnauthorized": {
                 "title": "Reject unauthorized TLS certificates",

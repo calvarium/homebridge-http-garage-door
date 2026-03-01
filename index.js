@@ -27,6 +27,9 @@ module.exports = function(homebridge) {
 
     homebridge.on('shutdown', () => {
         GarageDoorOpener.instances.forEach(instance => {
+            if (typeof instance.stopPolling === 'function') {
+                instance.stopPolling();
+            }
             if (typeof instance.stopWebhookServer === 'function') {
                 instance.stopWebhookServer();
             }
