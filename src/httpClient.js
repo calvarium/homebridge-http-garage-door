@@ -6,14 +6,14 @@ class HttpClient {
     constructor(log, options = {}) {
         this.log = log;
         this.debug = options.debug;
-        this.http_method = options.http_method || 'GET';
+        this.httpMethod = options.httpMethod || 'GET';
         this.timeout = options.timeout || 3000;
         this.auth = options.auth;
         this.rejectUnauthorized = options.rejectUnauthorized !== false;
     }
 
     request(url, body, method, callback) {
-        const reqMethod = (method || this.http_method).toUpperCase();
+        const reqMethod = (method || this.httpMethod).toUpperCase();
         if (this.debug && this.log) {
             this.log('HTTP request -> method: %s, url: %s, body: %s', reqMethod, url, body);
         }
@@ -22,7 +22,7 @@ class HttpClient {
         try {
             parsedUrl = new URL(url);
         } catch {
-            if (callback) callback(new Error(`Invalid URL: ${url}`));
+            if (callback) {callback(new Error(`Invalid URL: ${url}`));}
             return;
         }
 
@@ -55,7 +55,7 @@ class HttpClient {
             res.setEncoding('utf8');
             res.on('data', (chunk) => { data += chunk; });
             res.on('end', () => {
-                if (callback) callback(null, res, data);
+                if (callback) {callback(null, res, data);}
             });
         });
 
@@ -67,7 +67,7 @@ class HttpClient {
             if (this.debug && this.log) {
                 this.log('HTTP request error: %s', err.message);
             }
-            if (callback) callback(err);
+            if (callback) {callback(err);}
         });
 
         if (bodyStr) {

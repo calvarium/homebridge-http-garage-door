@@ -3,6 +3,15 @@ const HttpClient = require('./httpClient');
 const WebhookServer = require('./webhookServer');
 const DeconzClient = require('./deconzClient');
 
+// HAP Door State Konstanten
+const DOOR_STATE = {
+    OPEN: 0,
+    CLOSED: 1,
+    OPENING: 2,
+    CLOSING: 3,
+    STOPPED: 4,
+};
+
 let Service;
 let Characteristic;
 const instances = [];
@@ -31,7 +40,8 @@ class GarageDoorOpener {
         this.password = config.password || null;
         this.timeout = config.timeout || 3000;
         this.webhookPort = config.webhookPort || null;
-        this.http_method = config.http_method || 'GET';
+        // Config-Key http_method (snake_case) wird intern als httpMethod (camelCase) geführt
+        this.httpMethod = config.http_method || 'GET';
         this.polling = config.polling || false;
         this.pollInterval = config.pollInterval || 120;
         this.statusURL = config.statusURL;
@@ -52,7 +62,7 @@ class GarageDoorOpener {
 
         this.httpClient = new HttpClient(this.log, {
             debug: this.config.debug,
-            http_method: this.http_method,
+            httpMethod: this.httpMethod,
             timeout: this.timeout,
             auth: this.auth,
             rejectUnauthorized: this.rejectUnauthorized,
@@ -63,7 +73,7 @@ class GarageDoorOpener {
                 this.log,
                 this.webhookPort,
                 this.config.debug,
-                () => this.handleWebhook()
+                () => this.handleWebhook(),
             );
         }
 
@@ -135,21 +145,21 @@ class GarageDoorOpener {
                     if (!this.movementTimeout) {
                         this.service
                             .getCharacteristic(Characteristic.TargetDoorState)
-                            .updateValue(statusValue <= 1 ? statusValue : 0);
+                            .updateValue(statusValue <= DOOR_STATE.CLOSED ? statusValue : DOOR_STATE.OPEN);
                     }
                     if (this.config.debug) {
                         this.log('Updated door state to: %s', statusValue);
                     }
                     callback();
                 }
-            }
+            },
         );
     }
 
     setTargetDoorState(value, callback) {
         let url;
         this.log('Setting targetDoorState to %s', value);
-        if (value === 1) {
+        if (value === DOOR_STATE.CLOSED) {
             url = this.closeURL;
         } else {
             url = this.openURL;
@@ -157,12 +167,12 @@ class GarageDoorOpener {
         if (this.config.debug) {
             this.log('Requesting URL: %s', url);
         }
-        this._httpRequest(url, '', this.http_method, (error) => {
+        this._httpRequest(url, '', this.httpMethod, (error) => {
             if (error) {
                 this.log.warn('Error setting targetDoorState: %s', error.message);
                 callback(error);
             } else {
-                if (value !== 1) {
+                if (value !== DOOR_STATE.CLOSED) {
                     if (this.switchOff) {
                         this.switchOffFunction();
                     }
@@ -189,7 +199,7 @@ class GarageDoorOpener {
         this.ignoreDeconzOpen = true;
         this.service
             .getCharacteristic(Characteristic.CurrentDoorState)
-            .updateValue(2);
+            .updateValue(DOOR_STATE.OPENING);
         this.movementTimeout = setTimeout(() => {
             this.ignoreDeconzOpen = false;
             this.movementTimeout = null;
@@ -209,7 +219,7 @@ class GarageDoorOpener {
         this.ignoreDeconzOpen = false;
         this.service
             .getCharacteristic(Characteristic.CurrentDoorState)
-            .updateValue(3);
+            .updateValue(DOOR_STATE.CLOSING);
         this.movementTimeout = setTimeout(() => {
             this.movementTimeout = null;
             this._getStatus(() => {});
@@ -225,10 +235,10 @@ class GarageDoorOpener {
             this.log('Auto-close timer fired, checking door state...');
             const execute = () => {
                 const current = this.getCurrentDoorState();
-                // 0 = OPEN, 2 = OPENING — beides als "noch offen" werten
-                if (current === 0 || current === 2) {
+                // OPEN/OPENING — beides als "noch offen" werten
+                if (current === DOOR_STATE.OPEN || current === DOOR_STATE.OPENING) {
                     this.log.warn('Auto-close: door still open, triggering close');
-                    this.service.setCharacteristic(Characteristic.TargetDoorState, 1);
+                    this.service.setCharacteristic(Characteristic.TargetDoorState, DOOR_STATE.CLOSED);
                 } else {
                     this.log('Auto-close: door already closed, nothing to do');
                 }
@@ -260,7 +270,7 @@ class GarageDoorOpener {
         this.log('Waiting %s seconds for switch off', this.switchOffDelay);
         setTimeout(() => {
             this.log('SwitchOff...');
-            this._httpRequest(this.switchOffURL, '', this.http_method, () => {});
+            this._httpRequest(this.switchOffURL, '', this.httpMethod, () => {});
         }, this.switchOffDelay * 1000);
     }
 
@@ -289,25 +299,25 @@ class GarageDoorOpener {
         const targetState = this.service.getCharacteristic(Characteristic.TargetDoorState).value;
         try {
             switch (currentState) {
-                case 1: // Closed -> start opening
+                case DOOR_STATE.CLOSED: // Closed -> start opening
                     this.log('Started opening');
                     this.service
                         .getCharacteristic(Characteristic.TargetDoorState)
-                        .updateValue(0);
+                        .updateValue(DOOR_STATE.OPEN);
                     this.simulateOpen();
                     if (this.autoClose) {
                         this._scheduleAutoClose();
                     }
                     break;
-                case 0: // Open -> start closing
+                case DOOR_STATE.OPEN: // Open -> start closing
                     this.log('Started closing');
                     this.service
                         .getCharacteristic(Characteristic.TargetDoorState)
-                        .updateValue(1);
+                        .updateValue(DOOR_STATE.CLOSED);
                     this.simulateClose();
                     break;
-                case 2: // Opening -> stop
-                case 3: // Closing -> stop
+                case DOOR_STATE.OPENING: // Opening -> stop
+                case DOOR_STATE.CLOSING: // Closing -> stop
                     this.log('Stopping movement');
                     if (this.movementTimeout) {
                         clearTimeout(this.movementTimeout);
@@ -315,20 +325,20 @@ class GarageDoorOpener {
                     }
                     this.service
                         .getCharacteristic(Characteristic.CurrentDoorState)
-                        .updateValue(4);
+                        .updateValue(DOOR_STATE.STOPPED);
                     break;
-                case 4: // Stopped -> reverse direction
-                    if (targetState === 0) {
+                case DOOR_STATE.STOPPED: // Stopped -> reverse direction
+                    if (targetState === DOOR_STATE.OPEN) {
                         this.log('Reversing to close');
                         this.service
                             .getCharacteristic(Characteristic.TargetDoorState)
-                            .updateValue(1);
+                            .updateValue(DOOR_STATE.CLOSED);
                         this.simulateClose();
                     } else {
                         this.log('Reversing to open');
                         this.service
                             .getCharacteristic(Characteristic.TargetDoorState)
-                            .updateValue(0);
+                            .updateValue(DOOR_STATE.OPEN);
                         this.simulateOpen();
                         if (this.autoClose) {
                             this._scheduleAutoClose();
@@ -358,15 +368,15 @@ class GarageDoorOpener {
                         return;
                     }
 
-                    const newState = state.open ? 0 : 1;
+                    const newState = state.open ? DOOR_STATE.OPEN : DOOR_STATE.CLOSED;
 
-                    if (!state.open && this.movementTimeout && this.getCurrentDoorState() === 3) {
+                    if (!state.open && this.movementTimeout && this.getCurrentDoorState() === DOOR_STATE.CLOSING) {
                         clearTimeout(this.movementTimeout);
                         this.movementTimeout = null;
                     }
 
                     const finalCurrent = state.open ? Characteristic.CurrentDoorState.OPEN
-                                : Characteristic.CurrentDoorState.CLOSED;
+                        : Characteristic.CurrentDoorState.CLOSED;
 
                     this.ignoreDeconzOpen = false;
 
@@ -389,24 +399,23 @@ class GarageDoorOpener {
     }
 
     syncFinalState(finalCurrent) {
-    const { CurrentDoorState, TargetDoorState } = Characteristic;
+        const { CurrentDoorState, TargetDoorState } = Characteristic;
 
-    // 1) Current sofort
-    this.service.updateCharacteristic(CurrentDoorState, finalCurrent);
+        // 1) Current sofort
+        this.service.updateCharacteristic(CurrentDoorState, finalCurrent);
 
-    // 2) Target nachziehen (nur 0/1)
-    const targetWanted = (finalCurrent === CurrentDoorState.OPEN)
-        ? TargetDoorState.OPEN
-        : TargetDoorState.CLOSED;
+        // 2) Target nachziehen (nur 0/1)
+        const targetWanted = (finalCurrent === CurrentDoorState.OPEN)
+            ? TargetDoorState.OPEN
+            : TargetDoorState.CLOSED;
 
-    // nur senden, wenn wirklich unterschiedlich, sonst erzwingen:
-    const tChar = this.service.getCharacteristic(TargetDoorState);
-    if (tChar.value !== targetWanted) {
-        // kleiner Delay, damit iOS zwei getrennte Events sieht
-        setTimeout(() => tChar.updateValue(targetWanted), 20);
+        // nur senden, wenn wirklich unterschiedlich, sonst erzwingen:
+        const tChar = this.service.getCharacteristic(TargetDoorState);
+        if (tChar.value !== targetWanted) {
+            // kleiner Delay, damit iOS zwei getrennte Events sieht
+            setTimeout(() => tChar.updateValue(targetWanted), 20);
+        }
     }
-    }
-
 
     stopWebhookServer() {
         if (this.pollIntervalHandle) {
@@ -455,16 +464,16 @@ class GarageDoorOpener {
                 this.log('Polling disabled');
             }
             // Wenn eine statusURL konfiguriert ist, einmalig den echten Status holen.
-            // Ansonsten sicher auf CLOSED (1) initialisieren.
+            // Ansonsten sicher auf CLOSED initialisieren.
             if (this.statusURL) {
                 this._getStatus(() => {});
             } else {
                 this.service
                     .getCharacteristic(Characteristic.CurrentDoorState)
-                    .updateValue(1);
+                    .updateValue(DOOR_STATE.CLOSED);
                 this.service
                     .getCharacteristic(Characteristic.TargetDoorState)
-                    .updateValue(1);
+                    .updateValue(DOOR_STATE.CLOSED);
             }
         }
 

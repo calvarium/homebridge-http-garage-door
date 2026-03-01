@@ -42,7 +42,7 @@ class DeconzClient {
                     if (
                         msg.e === 'changed' &&
                         msg.r === 'sensors' &&
-                        msg.id == this.deviceId &&
+                        String(msg.id) === String(this.deviceId) &&
                         msg.state
                     ) {
                         if (typeof this.onEvent === 'function') {

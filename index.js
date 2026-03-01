@@ -10,7 +10,7 @@ module.exports = function(homebridge) {
     homebridge.registerAccessory(
         'homebridge-garage-door-shelly1',
         'GarageDoorOpener',
-        GarageDoorOpener
+        GarageDoorOpener,
     );
 
     homebridge.on('didFinishLaunching', () => {
