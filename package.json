@@ -10,15 +10,14 @@
   "scripts": {
     "lint": "eslint .",
     "test": "jest",
-    "deploy": "export $(cat .env | xargs) && rsync -av --exclude='node_modules' --exclude='.git' ./ ${HOMEBRIDGE_USER}@${HOMEBRIDGE_HOST}:${HOMEBRIDGE_PLUGIN_PATH}/"
+    "deploy": "export $(cat .env | xargs) && rsync -av --exclude='node_modules' --exclude='.git' ./ ${HOMEBRIDGE_USER}@${HOMEBRIDGE_HOST}:${HOMEBRIDGE_PLUGIN_PATH}/ && ssh ${HOMEBRIDGE_USER}@${HOMEBRIDGE_HOST} \"cd ${HOMEBRIDGE_PLUGIN_PATH} && /opt/homebridge/bin/node /opt/homebridge/bin/npm install --omit=dev --no-fund --no-audit\""
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/calvarium/homebridge-http-garage-door.git"
   },
   "dependencies": {
-    "jsonpath": "^1.0.2",
-    "request": "^2.88.2",
+    "jsonpath-plus": "^10.4.0",
     "ws": "^8.18.2"
   },
   "keywords": [

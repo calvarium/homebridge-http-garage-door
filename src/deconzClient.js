@@ -10,12 +10,17 @@ class DeconzClient {
         this.ws = null;
         this.connected = false;
         this.onEvent = null;
+        this._destroyed = false;
     }
 
     connect(onEvent) {
         this.onEvent = onEvent;
+        this._destroyed = false;
         const url = `ws://${this.host}:${this.port}`;
         const connectWebSocket = () => {
+            if (this._destroyed) {
+                return;
+            }
             if (this.debug) {
                 this.log(`Connecting to deCONZ websocket at ${url}`);
             }
@@ -54,7 +59,9 @@ class DeconzClient {
                 if (this.debug) {
                     this.log(`deCONZ websocket disconnected from ${url}`);
                 }
-                setTimeout(connectWebSocket, 10000);
+                if (!this._destroyed) {
+                    setTimeout(connectWebSocket, 10000);
+                }
             });
 
             this.ws.on('error', (err) => {
@@ -66,9 +73,11 @@ class DeconzClient {
     }
 
     close() {
+        this._destroyed = true;
         if (this.ws) {
             this.connected = false;
             this.ws.close();
+            this.ws = null;
         }
     }
 }

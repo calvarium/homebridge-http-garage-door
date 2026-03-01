@@ -164,6 +164,12 @@
                 "type": "integer",
                 "default": 443,
                 "description": "Port of the deCONZ websocket"
+            },
+            "rejectUnauthorized": {
+                "title": "Reject unauthorized TLS certificates",
+                "type": "boolean",
+                "default": true,
+                "description": "Set to false to allow self-signed or untrusted HTTPS certificates. Only disable if you trust your local network."
             }
 
         }

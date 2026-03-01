@@ -39,6 +39,7 @@ class GarageDoorOpener {
         this.statusValueClosed = config.statusValueClosed || '1';
         this.statusValueOpening = config.statusValueOpening || '2';
         this.statusValueClosing = config.statusValueClosing || '3';
+        this.rejectUnauthorized = config.rejectUnauthorized !== false;
 
         this.deconzDeviceId = config.deconzDeviceId || null;
         this.deconzHost = config.deconzHost || 'localhost';
@@ -53,6 +54,7 @@ class GarageDoorOpener {
             http_method: this.http_method,
             timeout: this.timeout,
             auth: this.auth,
+            rejectUnauthorized: this.rejectUnauthorized,
         });
 
         if (this.webhookPort) {
@@ -77,6 +79,7 @@ class GarageDoorOpener {
         this.informationService = null;
         this.movementTimeout = null;
         this.ignoreDeconzOpen = false;
+        this.pollIntervalHandle = null;
 
         instances.push(this);
     }
@@ -374,6 +377,13 @@ class GarageDoorOpener {
 
 
     stopWebhookServer() {
+        if (this.pollIntervalHandle) {
+            clearInterval(this.pollIntervalHandle);
+            this.pollIntervalHandle = null;
+            if (this.config.debug) {
+                this.log('Polling interval stopped');
+            }
+        }
         if (this.webhookServer) {
             this.webhookServer.stop();
         }
@@ -405,7 +415,7 @@ class GarageDoorOpener {
                 this.log('Polling enabled with interval %s seconds', this.pollInterval);
             }
             this._getStatus(() => {});
-            setInterval(() => {
+            this.pollIntervalHandle = setInterval(() => {
                 this._getStatus(() => {});
             }, this.pollInterval * 1000);
         } else {
