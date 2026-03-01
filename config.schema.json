@@ -61,7 +61,13 @@
             "webhookPort": {
                 "title": "Webhook Port",
                 "type": "integer",
-                "description": "Port for local webhook server listening on /garage/update"
+                "description": "Port for local webhook server listening on the configured webhookPath"
+            },
+            "webhookPath": {
+                "title": "Webhook Path",
+                "type": "string",
+                "default": "/garage/update",
+                "description": "HTTP path the webhook server listens on (e.g. /garage/update). Useful when running multiple garage door instances on the same port."
             },
 
             "openTime": {

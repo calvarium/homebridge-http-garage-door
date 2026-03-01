@@ -17,11 +17,25 @@ let Characteristic;
 
 class GarageDoorOpener {
     static instances = [];
-    constructor(log, config) {
-        this.log = log;
-        this.config = config;
 
+    constructor(log, config) {
+        // --- Pflichtfeld-Validierung ---
+        if (!config.name) {
+            throw new Error('[GarageDoorOpener] config.name is required');
+        }
+        if (!config.openURL) {
+            throw new Error('[GarageDoorOpener] config.openURL is required');
+        }
+        if (!config.closeURL) {
+            throw new Error('[GarageDoorOpener] config.closeURL is required');
+        }
+
+        this.log = log;
+
+        // Alle Config-Werte werden vollständig auf this.* extrahiert;
+        // this.config wird nicht mehr als Rohobjekt-Referenz weitergegeben.
         this.name = config.name;
+        this.debug = config.debug || false;
         this.openURL = config.openURL;
         this.closeURL = config.closeURL;
         this.openTime = config.openTime || 10;
@@ -40,6 +54,7 @@ class GarageDoorOpener {
         this.password = config.password || null;
         this.timeout = config.timeout || 3000;
         this.webhookPort = config.webhookPort || null;
+        this.webhookPath = config.webhookPath || '/garage/update';
         // Config-Key http_method (snake_case) wird intern als httpMethod (camelCase) geführt
         this.httpMethod = config.http_method || 'GET';
         this.polling = config.polling || false;
@@ -56,12 +71,19 @@ class GarageDoorOpener {
         this.deconzHost = config.deconzHost || 'localhost';
         this.deconzPort = config.deconzPort || 443;
 
+        // Regex-Ausdrücke vorab kompilieren und auf Gültigkeit prüfen,
+        // damit Konfigurationsfehler früh (beim Start) sichtbar werden.
+        this.statusRegexOpen = this._compileRegex(this.statusValueOpen, 'statusValueOpen');
+        this.statusRegexClosed = this._compileRegex(this.statusValueClosed, 'statusValueClosed');
+        this.statusRegexOpening = this._compileRegex(this.statusValueOpening, 'statusValueOpening');
+        this.statusRegexClosing = this._compileRegex(this.statusValueClosing, 'statusValueClosing');
+
         if (this.username != null && this.password != null) {
             this.auth = { user: this.username, pass: this.password };
         }
 
         this.httpClient = new HttpClient(this.log, {
-            debug: this.config.debug,
+            debug: this.debug,
             httpMethod: this.httpMethod,
             timeout: this.timeout,
             auth: this.auth,
@@ -72,7 +94,8 @@ class GarageDoorOpener {
             this.webhookServer = new WebhookServer(
                 this.log,
                 this.webhookPort,
-                this.config.debug,
+                this.debug,
+                this.webhookPath,
                 () => this.handleWebhook(),
             );
         }
@@ -82,7 +105,7 @@ class GarageDoorOpener {
                 host: this.deconzHost,
                 port: this.deconzPort,
                 deviceId: this.deconzDeviceId,
-                debug: this.config.debug,
+                debug: this.debug,
             });
         }
 
@@ -97,6 +120,21 @@ class GarageDoorOpener {
         GarageDoorOpener.instances.push(this);
     }
 
+    /**
+     * Kompiliert einen RegExp-String und gibt eine RegExp-Instanz zurück.
+     * Wirft einen aussagekräftigen Fehler, wenn der Ausdruck ungültig ist.
+     * @param {string} pattern
+     * @param {string} configKey  Name des Config-Feldes (für Fehlermeldung)
+     * @returns {RegExp}
+     */
+    _compileRegex(pattern, configKey) {
+        try {
+            return new RegExp(pattern);
+        } catch (err) {
+            throw new Error(`[GarageDoorOpener] Invalid regex in config.${configKey}: "${pattern}" — ${err.message}`);
+        }
+    }
+
     static configure(service, characteristic) {
         Service = service;
         Characteristic = characteristic;
@@ -107,13 +145,9 @@ class GarageDoorOpener {
         callback();
     }
 
-    _httpRequest(url, body, method, callback) {
-        this.httpClient.request(url, body, method, callback);
-    }
-
     _getStatus(callback) {
         if (this._statusPending) {
-            if (this.config.debug) {
+            if (this.debug) {
                 this.log('_getStatus skipped: previous request still in flight');
             }
             // Pass a sentinel so callers can distinguish "skipped" from "success".
@@ -125,10 +159,10 @@ class GarageDoorOpener {
             this.statusURL,
             this.statusKey,
             {
-                open: this.statusValueOpen,
-                closed: this.statusValueClosed,
-                opening: this.statusValueOpening,
-                closing: this.statusValueClosing,
+                open: this.statusRegexOpen,
+                closed: this.statusRegexClosed,
+                opening: this.statusRegexOpening,
+                closing: this.statusRegexClosing,
             },
             (error, statusValue) => {
                 this._statusPending = false;
@@ -149,7 +183,7 @@ class GarageDoorOpener {
                             .getCharacteristic(Characteristic.TargetDoorState)
                             .updateValue(statusValue <= DOOR_STATE.CLOSED ? statusValue : DOOR_STATE.OPEN);
                     }
-                    if (this.config.debug) {
+                    if (this.debug) {
                         this.log('Updated door state to: %s', statusValue);
                     }
                     callback();
@@ -166,20 +200,34 @@ class GarageDoorOpener {
         } else {
             url = this.openURL;
         }
-        if (this.config.debug) {
+        if (this.debug) {
             this.log('Requesting URL: %s', url);
         }
-        this._httpRequest(url, '', this.httpMethod, (error) => {
+        this.httpClient.request(url, '', this.httpMethod, (error) => {
             if (error) {
                 this.log.warn('Error setting targetDoorState: %s', error.message);
                 callback(error);
             } else {
-                if (value !== DOOR_STATE.CLOSED) {
-                    if (this.switchOff) {
-                        this.switchOffFunction();
-                    }
-                    if (this.autoClose) {
-                        this._scheduleAutoClose();
+                // Im Webhook-Modus (webhookPort oder deconzDeviceId konfiguriert) kommt
+                // der Bewegungsstart über den Sensor-Callback (_processWebhookState /
+                // startDeconzListener). setTargetDoorState sendet hier nur den HTTP-Request
+                // und überlässt die Simulation dem Sensor-Pfad — sonst würde ein
+                // eingehender Webhook den Zustand OPENING sehen und sofort stoppen.
+                //
+                // Ohne Sensor (reiner HTTP-Modus) gibt es keinen Rückkanal, daher
+                // starten wir die Simulation hier selbst.
+                const hasSensorFeedback = this.webhookPort || this.deconzDeviceId;
+                if (!hasSensorFeedback) {
+                    if (value === DOOR_STATE.CLOSED) {
+                        this.simulateClose();
+                    } else {
+                        this.simulateOpen();
+                        if (this.switchOff) {
+                            this.switchOffFunction();
+                        }
+                        if (this.autoClose) {
+                            this._scheduleAutoClose();
+                        }
                     }
                 }
                 callback();
@@ -192,7 +240,7 @@ class GarageDoorOpener {
     }
 
     simulateOpen() {
-        if (this.config.debug) {
+        if (this.debug) {
             this.log('simulateOpen called');
         }
         if (this.movementTimeout) {
@@ -211,7 +259,7 @@ class GarageDoorOpener {
     }
 
     simulateClose() {
-        if (this.config.debug) {
+        if (this.debug) {
             this.log('simulateClose called');
         }
         this._cancelAutoClose();
@@ -267,20 +315,20 @@ class GarageDoorOpener {
         if (this.autoCloseTimer) {
             clearTimeout(this.autoCloseTimer);
             this.autoCloseTimer = null;
-            if (this.config.debug) {
+            if (this.debug) {
                 this.log('Auto-close timer cancelled');
             }
         }
     }
 
     switchOffFunction() {
-        if (this.config.debug) {
+        if (this.debug) {
             this.log('switchOffFunction called');
         }
         this.log('Waiting %s seconds for switch off', this.switchOffDelay);
         setTimeout(() => {
             this.log('SwitchOff...');
-            this._httpRequest(this.switchOffURL, '', this.httpMethod, () => {});
+            this.httpClient.request(this.switchOffURL, '', this.httpMethod, () => {});
         }, this.switchOffDelay * 1000);
     }
 
@@ -299,14 +347,14 @@ class GarageDoorOpener {
     _handleWebhookDebounced() {
         const currentState = this.getCurrentDoorState();
         const targetState = this.service.getCharacteristic(Characteristic.TargetDoorState).value;
-        if (this.config.debug) {
+        if (this.debug) {
             this.log('Webhook received, currentState: %s, targetState: %s', currentState, targetState);
         }
 
         // Wenn Polling deaktiviert und der initiale Status noch unbekannt ist (null),
         // erst einen frischen Status holen bevor die Webhook-Logik greift
         if (!this.polling && this.statusURL && currentState === null) {
-            if (this.config.debug) {
+            if (this.debug) {
                 this.log('Webhook: initial state unknown, fetching status first');
             }
             this._getStatus(() => this._processWebhookState());
@@ -386,7 +434,7 @@ class GarageDoorOpener {
             this.deconzClient.connect((state) => {
                 if (typeof state.open !== 'undefined') {
                     if (state.open && this.ignoreDeconzOpen) {
-                        if (this.config.debug) {
+                        if (this.debug) {
                             this.log('Ignoring deCONZ open event while opening');
                         }
                         return;
@@ -414,7 +462,7 @@ class GarageDoorOpener {
                         this._cancelAutoClose();
                     }
 
-                    if (this.config.debug) {
+                    if (this.debug) {
                         this.log('Updated door state from deCONZ to: %s', newState);
                     }
                 }
@@ -445,7 +493,7 @@ class GarageDoorOpener {
         if (this.pollIntervalHandle) {
             clearInterval(this.pollIntervalHandle);
             this.pollIntervalHandle = null;
-            if (this.config.debug) {
+            if (this.debug) {
                 this.log('Polling interval stopped');
             }
         }
@@ -463,8 +511,19 @@ class GarageDoorOpener {
         }
     }
 
+    /**
+     * Entfernt diese Instanz aus dem statischen instances-Array.
+     * Muss beim Shutdown aufgerufen werden, um einen Memory Leak zu vermeiden.
+     */
+    _unregisterInstance() {
+        const idx = GarageDoorOpener.instances.indexOf(this);
+        if (idx !== -1) {
+            GarageDoorOpener.instances.splice(idx, 1);
+        }
+    }
+
     getServices() {
-        if (this.config.debug) {
+        if (this.debug) {
             this.log('Initializing services');
         }
         this.informationService = new Service.AccessoryInformation();
@@ -479,7 +538,7 @@ class GarageDoorOpener {
             .on('set', this.setTargetDoorState.bind(this));
 
         if (this.polling) {
-            if (this.config.debug) {
+            if (this.debug) {
                 this.log('Polling enabled with interval %s seconds', this.pollInterval);
             }
             this._getStatus(() => {});
@@ -487,7 +546,7 @@ class GarageDoorOpener {
                 this._getStatus(() => {});
             }, this.pollInterval * 1000);
         } else {
-            if (this.config.debug) {
+            if (this.debug) {
                 this.log('Polling disabled');
             }
             // Wenn eine statusURL konfiguriert ist, einmalig den echten Status holen.

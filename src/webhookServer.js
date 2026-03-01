@@ -1,10 +1,12 @@
 const http = require('http');
 
 class WebhookServer {
-    constructor(log, port, debug, handler) {
+    constructor(log, port, debug, path, handler) {
         this.log = log;
         this.port = port;
         this.debug = debug;
+        // Konfigurierbarer Pfad; Fallback auf historischen Default
+        this.path = path || '/garage/update';
         this.handler = handler;
         this.server = null;
     }
@@ -15,14 +17,16 @@ class WebhookServer {
         }
         try {
             if (this.debug) {
-                this.log('Starting webhook server on port %s', this.port);
+                this.log('Starting webhook server on port %s (path: %s)', this.port, this.path);
             }
             this.server = http.createServer((req, res) => {
                 if (this.debug) {
                     this.log('Webhook request: %s %s', req.method, req.url);
                 }
                 try {
-                    if (req.url === '/garage/update') {
+                    // Pfad ohne Query-String vergleichen
+                    const reqPath = req.url ? req.url.split('?')[0] : '';
+                    if (reqPath === this.path) {
                         if (typeof this.handler === 'function') {
                             this.handler();
                         }
@@ -44,7 +48,7 @@ class WebhookServer {
             });
 
             this.server.listen(this.port, () => {
-                this.log('Webhook server listening on port %s', this.port);
+                this.log('Webhook server listening on port %s (path: %s)', this.port, this.path);
             });
         } catch (err) {
             this.log.error('Failed to start webhook server: %s', err.message);

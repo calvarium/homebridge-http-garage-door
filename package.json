@@ -10,7 +10,7 @@
   "scripts": {
     "lint": "eslint .",
     "test": "jest",
-    "deploy": "set -a && . ./.env && set +a && rsync -av --exclude='node_modules' --exclude='.git' ./ ${HOMEBRIDGE_USER}@${HOMEBRIDGE_HOST}:${HOMEBRIDGE_PLUGIN_PATH}/ && ssh ${HOMEBRIDGE_USER}@${HOMEBRIDGE_HOST} \"cd ${HOMEBRIDGE_PLUGIN_PATH} && /opt/homebridge/bin/node /opt/homebridge/bin/npm install --omit=dev --no-fund --no-audit\""
+    "deploy": "set -a && . ./.env && set +a && rsync -av --exclude='node_modules' --exclude='.git' --exclude='.github' --exclude='.venv' --exclude='test' ./ ${HOMEBRIDGE_USER}@${HOMEBRIDGE_HOST}:${HOMEBRIDGE_PLUGIN_PATH}/ && ssh ${HOMEBRIDGE_USER}@${HOMEBRIDGE_HOST} \"cd ${HOMEBRIDGE_PLUGIN_PATH} && /opt/homebridge/bin/node /opt/homebridge/bin/npm install --omit=dev --no-fund --no-audit\""
   },
   "repository": {
     "type": "git",

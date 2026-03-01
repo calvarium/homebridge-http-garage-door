@@ -15,27 +15,19 @@ module.exports = function(homebridge) {
 
     homebridge.on('didFinishLaunching', () => {
         GarageDoorOpener.instances.forEach(instance => {
-            if (typeof instance.startWebhookServer === 'function') {
-                instance.startWebhookServer();
-                instance._getStatus(function() {});
-            }
-            if (typeof instance.startDeconzListener === 'function') {
-                instance.startDeconzListener();
-            }
+            instance.startWebhookServer();
+            instance._getStatus(function() {});
+            instance.startDeconzListener();
         });
     });
 
     homebridge.on('shutdown', () => {
-        GarageDoorOpener.instances.forEach(instance => {
-            if (typeof instance.stopPolling === 'function') {
-                instance.stopPolling();
-            }
-            if (typeof instance.stopWebhookServer === 'function') {
-                instance.stopWebhookServer();
-            }
-            if (typeof instance.stopDeconzListener === 'function') {
-                instance.stopDeconzListener();
-            }
+        // Kopie erstellen, da _unregisterInstance das Array während der Iteration verändert
+        [...GarageDoorOpener.instances].forEach(instance => {
+            instance.stopPolling();
+            instance.stopWebhookServer();
+            instance.stopDeconzListener();
+            instance._unregisterInstance();
         });
     });
 };

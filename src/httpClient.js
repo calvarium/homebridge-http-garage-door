@@ -102,16 +102,18 @@ class HttpClient {
                     wrap: false,
                 });
                 let matched = false;
-                if (new RegExp(values.open).test(originalStatusValue)) {
+                // values.open/closed/opening/closing sind bereits kompilierte RegExp-Instanzen
+                // (vorbereitet in GarageDoorOpener._compileRegex); kein erneutes new RegExp() nötig.
+                if (values.open.test(String(originalStatusValue))) {
                     statusValue = 0;
                     matched = true;
-                } else if (new RegExp(values.closed).test(originalStatusValue)) {
+                } else if (values.closed.test(String(originalStatusValue))) {
                     statusValue = 1;
                     matched = true;
-                } else if (new RegExp(values.opening).test(originalStatusValue)) {
+                } else if (values.opening.test(String(originalStatusValue))) {
                     statusValue = 2;
                     matched = true;
-                } else if (new RegExp(values.closing).test(originalStatusValue)) {
+                } else if (values.closing.test(String(originalStatusValue))) {
                     statusValue = 3;
                     matched = true;
                 }
