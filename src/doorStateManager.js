@@ -273,20 +273,14 @@ class DoorStateManager {
             return;
         }
 
-        const newState = state.open ? DOOR_STATE.OPEN : DOOR_STATE.CLOSED;
-
         // Laufenden Schließ-Timer stoppen, wenn echter Closed-Event eintrifft
         if (!state.open && this.movementTimeout && this.getCurrentDoorState() === DOOR_STATE.CLOSING) {
             clearTimeout(this.movementTimeout);
             this.movementTimeout = null;
         }
 
-        const finalCurrent = state.open
-            ? this.Characteristic.CurrentDoorState.OPEN
-            : this.Characteristic.CurrentDoorState.CLOSED;
-
         this.ignoreDeconzOpen = false;
-        this.syncFinalState(finalCurrent);
+        this.syncFinalState(state.open ? DOOR_STATE.OPEN : DOOR_STATE.CLOSED);
 
         if (state.open) {
             if (this.autoClose) {
@@ -297,7 +291,7 @@ class DoorStateManager {
         }
 
         if (this.debug) {
-            this.log('Updated door state from deCONZ to: %s', newState);
+            this.log('Updated door state from deCONZ to: %s', state.open ? DOOR_STATE.OPEN : DOOR_STATE.CLOSED);
         }
     }
 

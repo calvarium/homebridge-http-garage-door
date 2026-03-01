@@ -311,10 +311,7 @@ class GarageDoorOpener {
      * Muss beim Shutdown aufgerufen werden, um einen Memory Leak zu vermeiden.
      */
     _unregisterInstance() {
-        const idx = GarageDoorOpener.instances.indexOf(this);
-        if (idx !== -1) {
-            GarageDoorOpener.instances.splice(idx, 1);
-        }
+        GarageDoorOpener.instances = GarageDoorOpener.instances.filter(i => i !== this);
     }
 
     // -------------------------------------------------------------------------
@@ -340,7 +337,6 @@ class GarageDoorOpener {
             if (this.debug) {
                 this.log('Polling enabled with interval %s seconds', this.pollInterval);
             }
-            this._getStatus(() => {});
             this.pollIntervalHandle = setInterval(() => {
                 this._getStatus(() => {});
             }, this.pollInterval * 1000);
@@ -348,11 +344,9 @@ class GarageDoorOpener {
             if (this.debug) {
                 this.log('Polling disabled');
             }
-            // Wenn eine statusURL konfiguriert ist, einmalig den echten Status holen.
-            // Ansonsten sicher auf CLOSED initialisieren.
-            if (this.statusURL) {
-                this._getStatus(() => {});
-            } else {
+            // Ohne statusURL sicher auf CLOSED initialisieren; den echten Status
+            // holt start() via _getStatus beim didFinishLaunching-Event.
+            if (!this.statusURL) {
                 this.service
                     .getCharacteristic(Characteristic.CurrentDoorState)
                     .updateValue(DOOR_STATE.CLOSED);
