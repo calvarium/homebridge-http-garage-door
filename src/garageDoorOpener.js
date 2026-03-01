@@ -19,6 +19,9 @@ class GarageDoorOpener {
         this.closeTime = config.closeTime || 10;
         this.switchOff = config.switchOff || false;
         this.switchOffDelay = config.switchOffDelay || 2;
+        this.autoClose = config.autoClose || false;
+        this.autoCloseDelay = config.autoCloseDelay || 3600;
+        this.autoCloseTimer = null;
         this.manufacturer = config.manufacturer || packageJson.author.name;
         this.serial = config.serial || packageJson.version;
         this.model = config.model || packageJson.name;
@@ -145,6 +148,9 @@ class GarageDoorOpener {
                     if (this.switchOff) {
                         this.switchOffFunction();
                     }
+                    if (this.autoClose) {
+                        this._scheduleAutoClose();
+                    }
                 }
                 callback();
             }
@@ -178,6 +184,7 @@ class GarageDoorOpener {
         if (this.config.debug) {
             this.log('simulateClose called');
         }
+        this._cancelAutoClose();
         if (this.movementTimeout) {
             clearTimeout(this.movementTimeout);
         }
@@ -190,6 +197,42 @@ class GarageDoorOpener {
             this._getStatus(() => {});
             this.log('Finished closing');
         }, this.closeTime * 1000);
+    }
+
+    _scheduleAutoClose() {
+        this._cancelAutoClose();
+        this.log('Auto-close scheduled in %s seconds', this.autoCloseDelay);
+        this.autoCloseTimer = setTimeout(() => {
+            this.autoCloseTimer = null;
+            this.log('Auto-close timer fired, checking door state...');
+            const execute = () => {
+                const current = this.getCurrentDoorState();
+                // 0 = OPEN, 2 = OPENING — beides als "noch offen" werten
+                if (current === 0 || current === 2) {
+                    this.log.warn('Auto-close: door still open, triggering close');
+                    this.service.setCharacteristic(Characteristic.TargetDoorState, 1);
+                } else {
+                    this.log('Auto-close: door already closed, nothing to do');
+                }
+            };
+            if (this.polling) {
+                // Frischen Status holen, dann entscheiden
+                this._getStatus(() => execute());
+            } else {
+                // Ohne Sensor konservativ direkt schließen
+                execute();
+            }
+        }, this.autoCloseDelay * 1000);
+    }
+
+    _cancelAutoClose() {
+        if (this.autoCloseTimer) {
+            clearTimeout(this.autoCloseTimer);
+            this.autoCloseTimer = null;
+            if (this.config.debug) {
+                this.log('Auto-close timer cancelled');
+            }
+        }
     }
 
     switchOffFunction() {
@@ -217,6 +260,9 @@ class GarageDoorOpener {
                         .getCharacteristic(Characteristic.TargetDoorState)
                         .updateValue(0);
                     this.simulateOpen();
+                    if (this.autoClose) {
+                        this._scheduleAutoClose();
+                    }
                     break;
                 case 0: // Open -> start closing
                     this.log('Started closing');
@@ -249,6 +295,9 @@ class GarageDoorOpener {
                             .getCharacteristic(Characteristic.TargetDoorState)
                             .updateValue(0);
                         this.simulateOpen();
+                        if (this.autoClose) {
+                            this._scheduleAutoClose();
+                        }
                     }
                     break;
             }
@@ -287,6 +336,15 @@ class GarageDoorOpener {
                     this.ignoreDeconzOpen = false;
 
                     this.syncFinalState(finalCurrent);
+
+                    if (state.open) {
+                        if (this.autoClose) {
+                            this._scheduleAutoClose();
+                        }
+                    } else {
+                        this._cancelAutoClose();
+                    }
+
                     if (this.config.debug) {
                         this.log('Updated door state from deCONZ to: %s', newState);
                     }

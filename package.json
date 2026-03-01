@@ -9,7 +9,8 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "test": "jest"
+    "test": "jest",
+    "deploy": "export $(cat .env | xargs) && rsync -av --exclude='node_modules' --exclude='.git' ./ ${HOMEBRIDGE_USER}@${HOMEBRIDGE_HOST}:${HOMEBRIDGE_PLUGIN_PATH}/"
   },
   "repository": {
     "type": "git",

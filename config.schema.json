@@ -72,6 +72,18 @@
                 "default": 10,
                 "description": "Time (in seconds) to simulate your garage closing"
             },
+            "autoClose": {
+                "title": "Auto close",
+                "type": "boolean",
+                "default": false,
+                "description": "Automatically close the garage door if it has been open for too long"
+            },
+            "autoCloseDelay": {
+                "title": "Auto close delay",
+                "type": "integer",
+                "default": 3600,
+                "description": "Time (in seconds) after which the garage door will be automatically closed (if autoClose is enabled)"
+            },
             "polling": {
                 "title": "Poll state",
                 "type": "boolean",
