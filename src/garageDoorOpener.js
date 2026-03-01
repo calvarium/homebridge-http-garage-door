@@ -2,15 +2,7 @@ const packageJson = require('../package.json');
 const HttpClient = require('./httpClient');
 const WebhookServer = require('./webhookServer');
 const DeconzClient = require('./deconzClient');
-
-// HAP Door State Konstanten
-const DOOR_STATE = {
-    OPEN: 0,
-    CLOSED: 1,
-    OPENING: 2,
-    CLOSING: 3,
-    STOPPED: 4,
-};
+const { DoorStateManager, DOOR_STATE } = require('./doorStateManager');
 
 let Service;
 let Characteristic;
@@ -45,7 +37,6 @@ class GarageDoorOpener {
         this.switchOffURL = config.switchOffURL || config.openURL;
         this.autoClose = config.autoClose || false;
         this.autoCloseDelay = config.autoCloseDelay || 3600;
-        this.autoCloseTimer = null;
         this.manufacturer = config.manufacturer || (typeof packageJson.author === 'string' ? packageJson.author : packageJson.author.name);
         this.serial = config.serial || packageJson.version;
         this.model = config.model || packageJson.name;
@@ -71,6 +62,10 @@ class GarageDoorOpener {
         this.deconzHost = config.deconzHost || 'localhost';
         this.deconzPort = config.deconzPort || 443;
 
+        // Ob mindestens ein Sensor-Feedback-Kanal konfiguriert ist.
+        // Entscheidet, ob setTargetDoorState die Simulation selbst startet.
+        this.hasSensorFeedback = !!(this.webhookPort || this.deconzDeviceId);
+
         // Regex-Ausdrücke vorab kompilieren und auf Gültigkeit prüfen,
         // damit Konfigurationsfehler früh (beim Start) sichtbar werden.
         this.statusRegexOpen = this._compileRegex(this.statusValueOpen, 'statusValueOpen');
@@ -90,13 +85,32 @@ class GarageDoorOpener {
             rejectUnauthorized: this.rejectUnauthorized,
         });
 
+        this.service = new Service.GarageDoorOpener(this.name);
+        this.informationService = null;
+        this.pollIntervalHandle = null;
+        this._statusPending = false;
+
+        // Zustandsautomat – verwaltet alle Timer und Bewegungslogik
+        this.stateManager = new DoorStateManager({
+            log: this.log,
+            service: this.service,
+            Characteristic,
+            debug: this.debug,
+            openTime: this.openTime,
+            closeTime: this.closeTime,
+            autoClose: this.autoClose,
+            autoCloseDelay: this.autoCloseDelay,
+            polling: this.polling,
+            onStatusRefresh: (cb) => this._getStatus(cb),
+        });
+
         if (this.webhookPort) {
             this.webhookServer = new WebhookServer(
                 this.log,
                 this.webhookPort,
                 this.debug,
                 this.webhookPath,
-                () => this.handleWebhook(),
+                () => this.stateManager.handleWebhook(this.polling, this.statusURL),
             );
         }
 
@@ -108,14 +122,6 @@ class GarageDoorOpener {
                 debug: this.debug,
             });
         }
-
-        this.service = new Service.GarageDoorOpener(this.name);
-        this.informationService = null;
-        this.movementTimeout = null;
-        this.ignoreDeconzOpen = false;
-        this.pollIntervalHandle = null;
-        this._statusPending = false;
-        this._webhookDebounceTimer = null;
 
         GarageDoorOpener.instances.push(this);
     }
@@ -145,12 +151,16 @@ class GarageDoorOpener {
         callback();
     }
 
+    // -------------------------------------------------------------------------
+    // Status-Abfrage (HTTP-Polling)
+    // -------------------------------------------------------------------------
+
     _getStatus(callback) {
         if (this._statusPending) {
             if (this.debug) {
                 this.log('_getStatus skipped: previous request still in flight');
             }
-            // Pass a sentinel so callers can distinguish "skipped" from "success".
+            // Sentinel: zweites Argument `true` signalisiert "übersprungen"
             callback(null, /* skipped */ true);
             return;
         }
@@ -178,7 +188,7 @@ class GarageDoorOpener {
                         .updateValue(statusValue);
                     // TargetDoorState nur synchronisieren wenn kein aktiver
                     // Bewegungsvorgang läuft (vermeidet Race Condition mit laufendem Poll)
-                    if (!this.movementTimeout) {
+                    if (!this.stateManager.movementTimeout) {
                         this.service
                             .getCharacteristic(Characteristic.TargetDoorState)
                             .updateValue(statusValue <= DOOR_STATE.CLOSED ? statusValue : DOOR_STATE.OPEN);
@@ -192,14 +202,13 @@ class GarageDoorOpener {
         );
     }
 
+    // -------------------------------------------------------------------------
+    // Steuerung (HAP-Set-Handler)
+    // -------------------------------------------------------------------------
+
     setTargetDoorState(value, callback) {
-        let url;
+        const url = value === DOOR_STATE.CLOSED ? this.closeURL : this.openURL;
         this.log('Setting targetDoorState to %s', value);
-        if (value === DOOR_STATE.CLOSED) {
-            url = this.closeURL;
-        } else {
-            url = this.openURL;
-        }
         if (this.debug) {
             this.log('Requesting URL: %s', url);
         }
@@ -207,123 +216,40 @@ class GarageDoorOpener {
             if (error) {
                 this.log.warn('Error setting targetDoorState: %s', error.message);
                 callback(error);
-            } else {
-                // Im Webhook-Modus (webhookPort oder deconzDeviceId konfiguriert) kommt
-                // der Bewegungsstart über den Sensor-Callback (_processWebhookState /
-                // startDeconzListener). setTargetDoorState sendet hier nur den HTTP-Request
-                // und überlässt die Simulation dem Sensor-Pfad — sonst würde ein
-                // eingehender Webhook den Zustand OPENING sehen und sofort stoppen.
-                //
-                // Ohne Sensor (reiner HTTP-Modus) gibt es keinen Rückkanal, daher
-                // starten wir die Simulation hier selbst.
-                const hasSensorFeedback = this.webhookPort || this.deconzDeviceId;
-                if (!hasSensorFeedback) {
-                    if (value === DOOR_STATE.CLOSED) {
-                        this.simulateClose();
-                    } else {
-                        this.simulateOpen();
-                        if (this.switchOff) {
-                            this.switchOffFunction();
-                        }
-                        if (this.autoClose) {
-                            this._scheduleAutoClose();
-                        }
+                return;
+            }
+            // Im Sensor-Modus (webhookPort oder deconzDeviceId konfiguriert) kommt
+            // der Bewegungsstart über den Sensor-Callback (handleWebhook /
+            // handleDeconzState). setTargetDoorState sendet hier nur den HTTP-Request
+            // und überlässt die Simulation dem Sensor-Pfad — sonst würde ein
+            // eingehender Webhook den Zustand OPENING sehen und sofort stoppen.
+            //
+            // Ohne Sensor (reiner HTTP-Modus) gibt es keinen Rückkanal, daher
+            // starten wir die Simulation hier selbst.
+            if (!this.hasSensorFeedback) {
+                if (value === DOOR_STATE.CLOSED) {
+                    this.stateManager.simulateClose();
+                } else {
+                    this.stateManager.simulateOpen();
+                    if (this.switchOff) {
+                        this._switchOffFunction();
+                    }
+                    if (this.autoClose) {
+                        this.stateManager._scheduleAutoClose();
                     }
                 }
-                callback();
             }
+            callback();
         });
     }
 
-    getCurrentDoorState() {
-        return this.service.getCharacteristic(Characteristic.CurrentDoorState).value;
-    }
+    // -------------------------------------------------------------------------
+    // Hilfs-Methode: Relay nach Öffnen ausschalten
+    // -------------------------------------------------------------------------
 
-    simulateOpen() {
+    _switchOffFunction() {
         if (this.debug) {
-            this.log('simulateOpen called');
-        }
-        if (this.movementTimeout) {
-            clearTimeout(this.movementTimeout);
-        }
-        this.ignoreDeconzOpen = true;
-        this.service
-            .getCharacteristic(Characteristic.CurrentDoorState)
-            .updateValue(DOOR_STATE.OPENING);
-        this.movementTimeout = setTimeout(() => {
-            this.ignoreDeconzOpen = false;
-            this.movementTimeout = null;
-            this._getStatus(() => {});
-            this.log('Finished opening');
-        }, this.openTime * 1000);
-    }
-
-    simulateClose() {
-        if (this.debug) {
-            this.log('simulateClose called');
-        }
-        this._cancelAutoClose();
-        if (this.movementTimeout) {
-            clearTimeout(this.movementTimeout);
-        }
-        this.ignoreDeconzOpen = false;
-        this.service
-            .getCharacteristic(Characteristic.CurrentDoorState)
-            .updateValue(DOOR_STATE.CLOSING);
-        this.movementTimeout = setTimeout(() => {
-            this.movementTimeout = null;
-            this._getStatus(() => {});
-            this.log('Finished closing');
-        }, this.closeTime * 1000);
-    }
-
-    _scheduleAutoClose() {
-        this._cancelAutoClose();
-        this.log('Auto-close scheduled in %s seconds', this.autoCloseDelay);
-        this.autoCloseTimer = setTimeout(() => {
-            this.autoCloseTimer = null;
-            this.log('Auto-close timer fired, checking door state...');
-            const execute = () => {
-                const current = this.getCurrentDoorState();
-                // OPEN/OPENING — beides als "noch offen" werten
-                if (current === DOOR_STATE.OPEN || current === DOOR_STATE.OPENING) {
-                    this.log.warn('Auto-close: door still open, triggering close');
-                    this.service.setCharacteristic(Characteristic.TargetDoorState, DOOR_STATE.CLOSED);
-                } else {
-                    this.log('Auto-close: door already closed, nothing to do');
-                }
-            };
-            if (this.polling) {
-                // Frischen Status holen, dann entscheiden.
-                // Second argument is `true` when the request was skipped (still in flight);
-                // in that case we still run execute() because the cached state is recent.
-                this._getStatus((_err, skipped) => {
-                    if (_err && !skipped) {
-                        this.log.warn('Auto-close: could not refresh status, skipping');
-                        return;
-                    }
-                    execute();
-                });
-            } else {
-                // Ohne Sensor konservativ direkt schließen
-                execute();
-            }
-        }, this.autoCloseDelay * 1000);
-    }
-
-    _cancelAutoClose() {
-        if (this.autoCloseTimer) {
-            clearTimeout(this.autoCloseTimer);
-            this.autoCloseTimer = null;
-            if (this.debug) {
-                this.log('Auto-close timer cancelled');
-            }
-        }
-    }
-
-    switchOffFunction() {
-        if (this.debug) {
-            this.log('switchOffFunction called');
+            this.log('_switchOffFunction called');
         }
         this.log('Waiting %s seconds for switch off', this.switchOffDelay);
         setTimeout(() => {
@@ -332,95 +258,18 @@ class GarageDoorOpener {
         }, this.switchOffDelay * 1000);
     }
 
-    handleWebhook() {
-        // Debounce rapid successive webhook calls (e.g. contact-sensor bounce).
-        // Only the last call within 300 ms will actually be processed.
-        if (this._webhookDebounceTimer) {
-            clearTimeout(this._webhookDebounceTimer);
-        }
-        this._webhookDebounceTimer = setTimeout(() => {
-            this._webhookDebounceTimer = null;
-            this._handleWebhookDebounced();
-        }, 300);
-    }
+    // -------------------------------------------------------------------------
+    // Lifecycle: start / stop
+    // -------------------------------------------------------------------------
 
-    _handleWebhookDebounced() {
-        const currentState = this.getCurrentDoorState();
-        const targetState = this.service.getCharacteristic(Characteristic.TargetDoorState).value;
-        if (this.debug) {
-            this.log('Webhook received, currentState: %s, targetState: %s', currentState, targetState);
-        }
-
-        // Wenn Polling deaktiviert und der initiale Status noch unbekannt ist (null),
-        // erst einen frischen Status holen bevor die Webhook-Logik greift
-        if (!this.polling && this.statusURL && currentState === null) {
-            if (this.debug) {
-                this.log('Webhook: initial state unknown, fetching status first');
-            }
-            this._getStatus(() => this._processWebhookState());
-            return;
-        }
-
-        this._processWebhookState();
-    }
-
-    _processWebhookState() {
-        // Snapshot both values before any updateValue call to avoid reading
-        // a targetState that was already mutated during this processing run.
-        const currentState = this.getCurrentDoorState();
-        const targetState = this.service.getCharacteristic(Characteristic.TargetDoorState).value;
-        try {
-            switch (currentState) {
-                case DOOR_STATE.CLOSED: // Closed -> start opening
-                    this.log('Started opening');
-                    this.service
-                        .getCharacteristic(Characteristic.TargetDoorState)
-                        .updateValue(DOOR_STATE.OPEN);
-                    this.simulateOpen();
-                    if (this.autoClose) {
-                        this._scheduleAutoClose();
-                    }
-                    break;
-                case DOOR_STATE.OPEN: // Open -> start closing
-                    this.log('Started closing');
-                    this.service
-                        .getCharacteristic(Characteristic.TargetDoorState)
-                        .updateValue(DOOR_STATE.CLOSED);
-                    this.simulateClose();
-                    break;
-                case DOOR_STATE.OPENING: // Opening -> stop
-                case DOOR_STATE.CLOSING: // Closing -> stop
-                    this.log('Stopping movement');
-                    if (this.movementTimeout) {
-                        clearTimeout(this.movementTimeout);
-                        this.movementTimeout = null;
-                    }
-                    this.service
-                        .getCharacteristic(Characteristic.CurrentDoorState)
-                        .updateValue(DOOR_STATE.STOPPED);
-                    break;
-                case DOOR_STATE.STOPPED: // Stopped -> reverse direction
-                    if (targetState === DOOR_STATE.OPEN) {
-                        this.log('Reversing to close');
-                        this.service
-                            .getCharacteristic(Characteristic.TargetDoorState)
-                            .updateValue(DOOR_STATE.CLOSED);
-                        this.simulateClose();
-                    } else {
-                        this.log('Reversing to open');
-                        this.service
-                            .getCharacteristic(Characteristic.TargetDoorState)
-                            .updateValue(DOOR_STATE.OPEN);
-                        this.simulateOpen();
-                        if (this.autoClose) {
-                            this._scheduleAutoClose();
-                        }
-                    }
-                    break;
-            }
-        } catch (err) {
-            this.log.error('Failed to handle webhook: %s', err.message);
-        }
+    /**
+     * Startet alle aktiven Listener und holt den initialen Status.
+     * Wird von index.js im didFinishLaunching-Event aufgerufen.
+     */
+    start() {
+        this.startWebhookServer();
+        this._getStatus(() => {});
+        this.startDeconzListener();
     }
 
     startWebhookServer() {
@@ -431,61 +280,7 @@ class GarageDoorOpener {
 
     startDeconzListener() {
         if (this.deconzClient) {
-            this.deconzClient.connect((state) => {
-                if (typeof state.open !== 'undefined') {
-                    if (state.open && this.ignoreDeconzOpen) {
-                        if (this.debug) {
-                            this.log('Ignoring deCONZ open event while opening');
-                        }
-                        return;
-                    }
-
-                    const newState = state.open ? DOOR_STATE.OPEN : DOOR_STATE.CLOSED;
-
-                    if (!state.open && this.movementTimeout && this.getCurrentDoorState() === DOOR_STATE.CLOSING) {
-                        clearTimeout(this.movementTimeout);
-                        this.movementTimeout = null;
-                    }
-
-                    const finalCurrent = state.open ? Characteristic.CurrentDoorState.OPEN
-                        : Characteristic.CurrentDoorState.CLOSED;
-
-                    this.ignoreDeconzOpen = false;
-
-                    this.syncFinalState(finalCurrent);
-
-                    if (state.open) {
-                        if (this.autoClose) {
-                            this._scheduleAutoClose();
-                        }
-                    } else {
-                        this._cancelAutoClose();
-                    }
-
-                    if (this.debug) {
-                        this.log('Updated door state from deCONZ to: %s', newState);
-                    }
-                }
-            });
-        }
-    }
-
-    syncFinalState(finalCurrent) {
-        const { CurrentDoorState, TargetDoorState } = Characteristic;
-
-        // 1) Current sofort
-        this.service.updateCharacteristic(CurrentDoorState, finalCurrent);
-
-        // 2) Target nachziehen (nur 0/1)
-        const targetWanted = (finalCurrent === CurrentDoorState.OPEN)
-            ? TargetDoorState.OPEN
-            : TargetDoorState.CLOSED;
-
-        // nur senden, wenn wirklich unterschiedlich, sonst erzwingen:
-        const tChar = this.service.getCharacteristic(TargetDoorState);
-        if (tChar.value !== targetWanted) {
-            // kleiner Delay, damit iOS zwei getrennte Events sieht
-            setTimeout(() => tChar.updateValue(targetWanted), 20);
+            this.deconzClient.connect((state) => this.stateManager.handleDeconzState(state));
         }
     }
 
@@ -521,6 +316,10 @@ class GarageDoorOpener {
             GarageDoorOpener.instances.splice(idx, 1);
         }
     }
+
+    // -------------------------------------------------------------------------
+    // HAP-Service-Registrierung
+    // -------------------------------------------------------------------------
 
     getServices() {
         if (this.debug) {

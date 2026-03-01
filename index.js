@@ -15,9 +15,7 @@ module.exports = function(homebridge) {
 
     homebridge.on('didFinishLaunching', () => {
         GarageDoorOpener.instances.forEach(instance => {
-            instance.startWebhookServer();
-            instance._getStatus(function() {});
-            instance.startDeconzListener();
+            instance.start();
         });
     });
 
@@ -27,6 +25,7 @@ module.exports = function(homebridge) {
             instance.stopPolling();
             instance.stopWebhookServer();
             instance.stopDeconzListener();
+            instance.stateManager.destroy();
             instance._unregisterInstance();
         });
     });
