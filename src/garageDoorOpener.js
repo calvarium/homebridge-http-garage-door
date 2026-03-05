@@ -196,6 +196,11 @@ class GarageDoorOpener {
         if (this.debug) {
             this.log('Requesting URL: %s', url);
         }
+        // AutoClose sofort canceln wenn User schließt – vor dem HTTP-Request,
+        // damit kein Timer mehr feuern kann während der Close-Befehl unterwegs ist.
+        if (value === DOOR_STATE.CLOSED && this.autoClose) {
+            this.stateManager._cancelAutoClose();
+        }
         this.httpClient.request(url, '', this.httpMethod, (error) => {
             if (error) {
                 this.log.warn('Error setting targetDoorState: %s', error.message);
@@ -218,10 +223,13 @@ class GarageDoorOpener {
                     if (this.switchOff) {
                         this._switchOffFunction();
                     }
-                    if (this.autoClose) {
-                        this.stateManager._scheduleAutoClose();
-                    }
                 }
+            }
+            // AutoClose für alle Pfade: Timer starten wenn OPEN, Guard in
+            // _scheduleAutoClose verhindert Doppel-Setzen (z.B. wenn zusätzlich
+            // _processWebhookState aufgerufen wird).
+            if (value === DOOR_STATE.OPEN && this.autoClose) {
+                this.stateManager._scheduleAutoClose();
             }
             callback();
         });

@@ -86,7 +86,8 @@ class DoorStateManager {
         if (this.debug) {
             this.log('simulateClose called');
         }
-        this._cancelAutoClose();
+        // Kein _cancelAutoClose() hier – der Cancel obliegt dem Aufrufer
+        // (setTargetDoorState / _processWebhookState), nicht der Simulation selbst.
         if (this.movementTimeout) {
             clearTimeout(this.movementTimeout);
         }
@@ -106,7 +107,13 @@ class DoorStateManager {
     // -------------------------------------------------------------------------
 
     _scheduleAutoClose() {
-        this._cancelAutoClose();
+        // Guard: laufenden Timer nicht überschreiben – nur starten wenn keiner aktiv ist.
+        if (this.autoCloseTimer) {
+            if (this.debug) {
+                this.log('Auto-close already scheduled, skipping');
+            }
+            return;
+        }
         this.log('Auto-close scheduled in %s seconds', this.autoCloseDelay);
         this.autoCloseTimer = setTimeout(() => {
             this.autoCloseTimer = null;
@@ -127,8 +134,10 @@ class DoorStateManager {
                 // in that case we still run execute() because the cached state is recent.
                 this.onStatusRefresh((_err, skipped) => {
                     if (_err && !skipped) {
-                        this.log.warn('Auto-close: could not refresh status, skipping');
-                        return;
+                        // Bei Fehler konservativ trotzdem schließen:
+                        // Nach autoCloseDelay Sekunden ist es sicherer zu schließen
+                        // als das Tor offen zu lassen.
+                        this.log.warn('Auto-close: could not refresh status, closing conservatively');
                     }
                     execute();
                 });
@@ -140,12 +149,11 @@ class DoorStateManager {
     }
 
     _cancelAutoClose() {
-        if (this.autoCloseTimer) {
-            clearTimeout(this.autoCloseTimer);
-            this.autoCloseTimer = null;
-            if (this.debug) {
-                this.log('Auto-close timer cancelled');
-            }
+        this.log('Auto-close function called');
+        clearTimeout(this.autoCloseTimer);
+        this.autoCloseTimer = null;
+        if (this.debug) {
+            this.log('Auto-close timer cancelled');
         }
     }
 
@@ -213,6 +221,7 @@ class DoorStateManager {
                     break;
                 case DOOR_STATE.OPEN: // Offen → Schließen starten
                     this.log('Started closing');
+                    this._cancelAutoClose();
                     this.service
                         .getCharacteristic(this.Characteristic.TargetDoorState)
                         .updateValue(DOOR_STATE.CLOSED);
@@ -284,9 +293,11 @@ class DoorStateManager {
         this.ignoreDeconzOpen = false;
         this.syncFinalState(state.open ? DOOR_STATE.OPEN : DOOR_STATE.CLOSED);
 
-        if (state.open && this.autoClose) {
-            this._scheduleAutoClose();
-        } else if (!state.open) {
+        // AutoClose wird ausschließlich über setTargetDoorState (Home-App/Siri)
+        // oder _processWebhookState (Wandtaster) gestartet – nie über den Sensor.
+        // Grund: deCONZ-Events können durch Sturm / Magnetkontakt-Wackler ausgelöst
+        // werden; ein Timer-Start auf Basis eines Sensor-Events wäre sicherheitskritisch.
+        if (!state.open) {
             this._cancelAutoClose();
         }
 

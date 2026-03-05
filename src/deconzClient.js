@@ -45,9 +45,6 @@ class DeconzClient {
             this.ws.on('message', (data) => {
                 try {
                     const msg = JSON.parse(data.toString());
-                    if (this.debug) {
-                        this.log(`deCONZ websocket message: ${data}`);
-                    }
                     if (
                         msg.e === 'changed' &&
                         msg.r === 'sensors' &&
